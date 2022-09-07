@@ -42,9 +42,13 @@ where
 		&mut self,
 		cx: &mut std::task::Context<'_>,
 	) -> std::task::Poll<Result<(), Self::Error>> {
-		let _grpc = self.grpc.poll_ready(cx).map_err(|e| e.into())?;
-		let _web = self.web.poll_ready(cx).map_err(|e| e.into())?;
-		Poll::Ready(Ok(()))
+		//There is no problem in calling poll_ready if is Ready, and the docs don't have any limitation on pending
+		let grpc = self.grpc.poll_ready(cx).map_err(|e| e.into())?;
+		let web = self.web.poll_ready(cx).map_err(|e| e.into())?;
+		match (grpc, web) {
+			(Poll::Ready(_), Poll::Ready(_)) => Poll::Ready(Ok(())),
+			_ => Poll::Pending,
+		}
 	}
 
 	fn call(&mut self, _req: Request<Body>) -> Self::Future {
