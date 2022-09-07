@@ -29,20 +29,25 @@ impl<Grpc, Web> Service<Request<Body>> for Multiplexer<Grpc, Web>
 where
 	Grpc: Service<Request<Body>>,
 	Web: Service<Request<Body>>,
+	//Inner errors can be converted to our error type
+	Grpc::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+	Web::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
 {
 	type Response = ();
-	///Any Error
+	///Generic error that can be moved between threads
 	type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 	type Future = Ready<Result<Self::Response, Self::Error>>;
 
 	fn poll_ready(
 		&mut self,
-		_cx: &mut std::task::Context<'_>,
+		cx: &mut std::task::Context<'_>,
 	) -> std::task::Poll<Result<(), Self::Error>> {
+		let _grpc = self.grpc.poll_ready(cx).map_err(|e| e.into())?;
+		let _web = self.web.poll_ready(cx).map_err(|e| e.into())?;
 		Poll::Ready(Ok(()))
 	}
 
-	fn call(&mut self, req: Request<Body>) -> Self::Future {
+	fn call(&mut self, _req: Request<Body>) -> Self::Future {
 		ready(Ok(()))
 	}
 }
@@ -86,5 +91,60 @@ mod tests {
 		let mut multiplex = Multiplexer::new(grpc, web);
 
 		multiplex.ready().await.unwrap();
+	}
+
+	mod svc {
+		use std::{
+			future::Future,
+			pin::Pin,
+			task::{Context, Poll},
+		};
+
+		use hyper::{Body, Request, Response};
+		use tower::Service;
+
+		#[derive(Clone, Copy)]
+		pub(super) struct ErrorService {}
+
+		impl Service<Request<Body>> for ErrorService {
+			type Response = Response<Body>;
+			type Error = String;
+			type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+			fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+				Poll::Ready(Err("This service always error".into()))
+			}
+
+			fn call(&mut self, _req: Request<Body>) -> Self::Future {
+				let res = Ok(Response::new(Body::empty()));
+				Box::pin(async { res })
+			}
+		}
+		#[derive(Clone, Copy)]
+		pub(super) struct ReadyService {}
+
+		impl Service<Request<Body>> for ReadyService {
+			type Response = Response<Body>;
+			type Error = hyper::Error;
+			type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+			fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+				Poll::Ready(Ok(()))
+			}
+
+			fn call(&mut self, _req: Request<Body>) -> Self::Future {
+				let res = Ok(Response::new(Body::empty()));
+				Box::pin(async { res })
+			}
+		}
+	}
+
+	#[tokio::test]
+	async fn multiplex_propagate_inner_error() {
+		let ready = svc::ReadyService {};
+		let error = svc::ErrorService {};
+
+		assert!(Multiplexer::new(ready, error).ready().await.is_err());
+		assert!(Multiplexer::new(error, ready).ready().await.is_err());
 	}
 }
