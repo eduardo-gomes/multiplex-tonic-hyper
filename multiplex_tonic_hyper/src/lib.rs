@@ -38,6 +38,8 @@ where
 	type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 	type Future = Ready<Result<Self::Response, Self::Error>>;
 
+	///Call inner services poll_ready, and propagate errors.
+	/// Only is ready if both are ready.
 	fn poll_ready(
 		&mut self,
 		cx: &mut std::task::Context<'_>,
