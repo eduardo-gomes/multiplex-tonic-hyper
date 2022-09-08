@@ -1,3 +1,10 @@
+#![warn(missing_docs)]
+
+//! Crate to route requests between a tonic gRPC service, and some other service
+//!
+//! The [Multiplexer] struct implements Service<Request<Body>>, and routes
+//! requests based on the Content-Type header.
+
 use std::{future::Future, task::Poll};
 
 use hyper::{body::HttpBody, Body, Request, Response};
@@ -7,8 +14,66 @@ use tower::Service;
 /// Service that routes to a gRPC service and other service
 ///
 /// This service checks the Content-Type header, and send all requests
-/// with `application/grpc` to the grpc service, and all the others requests
+/// with `application/grpc` to the grpc service, and all other requests
 /// to the web service.
+///
+/// # Examples:
+///
+/// Routing to the web service:
+/// ```
+/// # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+/// # use std::convert::Infallible;
+///	# use multiplex_tonic_hyper::Multiplexer;
+/// use hyper::{header::CONTENT_TYPE, service::service_fn, Body, Request, Response};
+///	use tower::{Service, ServiceExt};
+///	async fn str_to_res(str: &'static str) -> Result<Response<Body>, Infallible> {
+///		Ok(Response::new(Body::from(str)))
+///	}
+///
+/// //Services that answer every request with a word
+///	let grpc = service_fn(|_| str_to_res("gRPC"));
+///	let web = service_fn(|_| str_to_res("web"));
+///
+///	let mut multiplex = Multiplexer::new(grpc, web);
+/// # /// We must check if service is ready before call. See [tower::Service]
+///	# multiplex.ready().await?;
+///	//Request web without content-type header
+///	let response = multiplex.call(Request::new(Body::empty())).await?;
+///	let content = hyper::body::to_bytes(response.into_body()).await?;
+/// assert_eq!(content, "web");
+/// # Ok(())
+/// # }
+/// # tokio_test::block_on(run()).unwrap();
+/// ```
+///
+/// Routing to the gRPC service:
+/// ```
+/// # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+/// # use std::convert::Infallible;
+/// # use hyper::{header::CONTENT_TYPE, service::service_fn, Body, Request, Response};
+///	# use multiplex_tonic_hyper::Multiplexer;
+///	# use tower::{Service, ServiceExt};
+///	# async fn str_to_res(str: &'static str) -> Result<Response<Body>, Infallible> {
+///	# 	Ok(Response::new(Body::from(str)))
+///	# }
+///	//...
+///	let grpc = service_fn(|_| str_to_res("gRPC"));
+///	let web = service_fn(|_| str_to_res("web"));
+///
+///	let mut multiplex = Multiplexer::new(grpc, web);
+/// # // We must check if service is ready before call. See [tower::Service]
+///	# multiplex.ready().await?;
+///	//Request grpc using content-type header
+///	let request = Request::builder()
+///		.header(CONTENT_TYPE, "application/grpc")
+///		.body(Body::empty())?;
+///	let response = multiplex.call(request).await?;
+///	let content = hyper::body::to_bytes(response.into_body()).await?;
+/// assert_eq!(content, "gRPC");
+/// # Ok(())
+/// # }
+/// # tokio_test::block_on(run()).unwrap();
+/// ```
 pub struct Multiplexer<Grpc, Web> {
 	grpc: Grpc,
 	web: Web,
@@ -18,11 +83,15 @@ where
 	Grpc: Service<Request<Body>>,
 	Web: Service<Request<Body>>,
 {
+	///This function consumes two Services, and returns a Multiplexer
 	pub fn new(grpc: Grpc, web: Web) -> Self {
 		Multiplexer { grpc, web }
 	}
 }
 type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
+fn to_boxed<T: Into<BoxedError>>(e: T) -> BoxedError {
+	e.into()
+}
 impl<Grpc, Web> Service<Request<Body>> for Multiplexer<Grpc, Web>
 where
 	//Each type is a Service<> with its own Body type
@@ -44,8 +113,8 @@ where
 		cx: &mut std::task::Context<'_>,
 	) -> std::task::Poll<Result<(), Self::Error>> {
 		//There is no problem in calling poll_ready if is Ready, and the docs don't have any limitation on pending
-		let grpc = self.grpc.poll_ready(cx).map_err(|e| e.into())?;
-		let web = self.web.poll_ready(cx).map_err(|e| e.into())?;
+		let grpc = self.grpc.poll_ready(cx).map_err(to_boxed)?;
+		let web = self.web.poll_ready(cx).map_err(to_boxed)?;
 		match (grpc, web) {
 			(Poll::Ready(_), Poll::Ready(_)) => Poll::Ready(Ok(())),
 			_ => Poll::Pending,
@@ -73,7 +142,9 @@ where
 /// That way is possible to call poll on the inner future
 #[pin_project(project = EncapsulatedProj)]
 pub enum EncapsulatedFuture<GrpcFuture, WebFuture> {
+	///Encapsulates a future from Grpc service
 	Grpc(#[pin] GrpcFuture),
+	///Encapsulates a future from Web service
 	Web(#[pin] WebFuture),
 }
 /// This implementation should map the response and the error from the inner futures
@@ -95,12 +166,12 @@ where
 		match self.project() {
 			EncapsulatedProj::Grpc(future) => future
 				.poll(cx)
-				.map_ok(|v| v.map(|val| EncapsulatedBody::Grpc(val)))
-				.map_err(|e| e.into()),
+				.map_ok(EncapsulatedBody::map_grpc)
+				.map_err(to_boxed),
 			EncapsulatedProj::Web(future) => future
 				.poll(cx)
-				.map_ok(|v| v.map(|val| EncapsulatedBody::Web(val)))
-				.map_err(|e| e.into()),
+				.map_ok(EncapsulatedBody::map_web)
+				.map_err(to_boxed),
 		}
 	}
 }
@@ -112,8 +183,21 @@ where
 /// This enum is used as the body type in [EncapsulatedFuture].
 #[pin_project(project = BodyProj)]
 pub enum EncapsulatedBody<GrpcBody, WebBody> {
+	///Encapsulates the body from Grpc service
 	Grpc(#[pin] GrpcBody),
+	///Encapsulates the body from Web service
 	Web(#[pin] WebBody),
+}
+impl<GrpcBody, WebBody> EncapsulatedBody<GrpcBody, WebBody> {
+	fn map_grpc(response: Response<GrpcBody>) -> Response<Self> {
+		response.map(EncapsulatedBody::Grpc)
+	}
+	fn map_web(response: Response<WebBody>) -> Response<Self> {
+		response.map(EncapsulatedBody::Web)
+	}
+}
+fn into_data<T: Into<hyper::body::Bytes>>(data: T) -> hyper::body::Bytes {
+	data.into()
 }
 impl<GrpcBody, WebBody, GrpcError, WebError> HttpBody for EncapsulatedBody<GrpcBody, WebBody>
 where
@@ -133,14 +217,8 @@ where
 		cx: &mut std::task::Context<'_>,
 	) -> Poll<Option<Result<Self::Data, Self::Error>>> {
 		match self.project() {
-			BodyProj::Grpc(body) => body
-				.poll_data(cx)
-				.map_ok(|data| data.into())
-				.map_err(|e| e.into()),
-			BodyProj::Web(body) => body
-				.poll_data(cx)
-				.map_ok(|data| data.into())
-				.map_err(|e| e.into()),
+			BodyProj::Grpc(body) => body.poll_data(cx).map_ok(into_data).map_err(to_boxed),
+			BodyProj::Web(body) => body.poll_data(cx).map_ok(into_data).map_err(to_boxed),
 		}
 	}
 
@@ -149,8 +227,8 @@ where
 		cx: &mut std::task::Context<'_>,
 	) -> Poll<Result<Option<hyper::HeaderMap>, Self::Error>> {
 		match self.project() {
-			BodyProj::Grpc(body) => body.poll_trailers(cx).map_err(|e| e.into()),
-			BodyProj::Web(body) => body.poll_trailers(cx).map_err(|e| e.into()),
+			BodyProj::Grpc(body) => body.poll_trailers(cx).map_err(to_boxed),
+			BodyProj::Web(body) => body.poll_trailers(cx).map_err(to_boxed),
 		}
 	}
 }
