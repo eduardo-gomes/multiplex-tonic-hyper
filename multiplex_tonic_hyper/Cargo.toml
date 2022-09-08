@@ -1,5 +1,5 @@
 [package]
-name = "multiplex_tonic_hyper"
+name = "multiplex-tonic-hyper"
 version = "0.1.0"
 edition = "2021"
 
