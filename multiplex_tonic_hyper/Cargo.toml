@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 tower = "0.4.13"
 hyper = "0.14.20"
+pin-project = "1.0.12"
 
 [dev-dependencies]
 tonic = "0.8"
