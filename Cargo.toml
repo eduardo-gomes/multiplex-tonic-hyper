@@ -2,6 +2,11 @@
 name = "multiplex-tonic-hyper"
 version = "0.1.0"
 edition = "2021"
+keywords = ["tonic", "hyper"]
+categories = ["network-programming"]
+description = "Merge a gRPC service and other HTTP service into one service"
+repository = "https://github.com/eduardo-gomes/multiplex-tonic-hyper/"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
