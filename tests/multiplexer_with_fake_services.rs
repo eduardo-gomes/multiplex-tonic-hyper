@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
-use tower::ServiceExt;
+use hyper::{Body, Request};
+use tower::{Service, ServiceExt};
 
 mod common;
 use common::svc;
@@ -50,4 +51,32 @@ async fn multiplexer_wait_until_all_inners_are_ready() {
 		"should wait for more {:?}",
 		(until - web_after)
 	);
+}
+
+#[test]
+fn multiplexer_accepts_any_http_body_as_web_body() {
+	let grpc = svc::ReadyService {};
+	// Web has a Response with a body different than hyper::Body
+	let web = svc::HttpBodyService {};
+	let service = Multiplexer::new(grpc, web);
+
+	fn impl_service<S: Service<Request<Body>>>(_service: S) {}
+
+	//This will only compile if multiplexer implements Service
+	// The first implementation was restricted to Response<hyper::Body>
+	impl_service(service);
+}
+
+#[test]
+fn multiplexer_accepts_any_http_body_as_grpc_body() {
+	// grpc has a Response with a body different than hyper::Body
+	let grpc = svc::HttpBodyService {};
+	let web = svc::ReadyService {};
+	let service = Multiplexer::new(grpc, web);
+
+	fn impl_service<S: Service<Request<Body>>>(_service: S) {}
+
+	//This will only compile if multiplexer implements Service
+	// The first implementation was restricted to Response<hyper::Body>
+	impl_service(service);
 }

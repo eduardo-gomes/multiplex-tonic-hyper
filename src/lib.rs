@@ -92,16 +92,18 @@ type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
 fn to_boxed<T: Into<BoxedError>>(e: T) -> BoxedError {
 	e.into()
 }
-impl<Grpc, Web> Service<Request<Body>> for Multiplexer<Grpc, Web>
+impl<Grpc, Web, GrpcBody, WebBody> Service<Request<Body>> for Multiplexer<Grpc, Web>
 where
 	//Each type is a Service<> with its own Body type
-	Grpc: Service<Request<Body>, Response = Response<Body>>,
-	Web: Service<Request<Body>, Response = Response<Body>>,
+	Grpc: Service<Request<Body>, Response = Response<GrpcBody>>,
+	Web: Service<Request<Body>, Response = Response<WebBody>>,
+	GrpcBody: HttpBody,
+	WebBody: HttpBody,
 	//Inner errors can be converted to our error type
 	Grpc::Error: Into<BoxedError>,
 	Web::Error: Into<BoxedError>,
 {
-	type Response = Response<EncapsulatedBody<Body, Body>>;
+	type Response = Response<EncapsulatedBody<GrpcBody, WebBody>>;
 	///Generic error that can be moved between threads
 	type Error = BoxedError;
 	type Future = EncapsulatedFuture<Grpc::Future, Web::Future>;
