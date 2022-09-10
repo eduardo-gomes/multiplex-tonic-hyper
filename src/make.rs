@@ -1,8 +1,9 @@
+use std::future::Future;
+use std::task::Poll;
+
 use futures::future::Join;
 use hyper::{Body, Request};
 use pin_project::pin_project;
-use std::future::Future;
-use std::task::Poll;
 use tower::Service;
 
 use crate::to_boxed;
@@ -26,6 +27,7 @@ impl<MakeGrpc, MakeWeb> MakeMultiplexer<MakeGrpc, MakeWeb> {
 		}
 	}
 }
+
 impl<Grpc, Web, GrpcError, WebError, MakeGrpc, MakeWeb, Target> Service<Target>
 	for MakeMultiplexer<MakeGrpc, MakeWeb>
 where
@@ -49,9 +51,7 @@ where
 			self.make_web.poll_ready(cx).map_err(to_boxed)?,
 		) {
 			(Poll::Ready(_), Poll::Ready(_)) => Poll::Ready(Ok(())),
-			(Poll::Ready(_), Poll::Pending) => Poll::Pending,
-			(Poll::Pending, Poll::Ready(_)) => Poll::Pending,
-			(Poll::Pending, Poll::Pending) => Poll::Pending,
+			_ => Poll::Pending,
 		}
 	}
 
@@ -71,6 +71,7 @@ where
 	#[pin]
 	inner: Join<MakeGrpcFuture, MakeWebFuture>,
 }
+
 impl<MakeGrpcFuture, MakeWebFuture> MakeMultiplexerFuture<MakeGrpcFuture, MakeWebFuture>
 where
 	MakeGrpcFuture: Future,
@@ -101,10 +102,8 @@ where
 		if let Poll::Ready(output) = poll {
 			match output {
 				(Ok(grpc), Ok(web)) => Poll::Ready(Ok(Multiplexer::new(grpc, web))),
-				// (Ok(_), Err(web_error)) => Poll::Ready(Err(web_error.into())),
-				// (Err(grpc_error), _) => Poll::Ready(Err(grpc_error.into())),
-				// (Err(_), Err(_)) => todo!(), //Should return both errors some way
-				_ => todo!(),
+				(Err(grpc_error), _) => Poll::Ready(Err(grpc_error.into())),
+				(_, Err(web_error)) => Poll::Ready(Err(web_error.into())),
 			}
 		} else {
 			Poll::Pending
@@ -114,47 +113,39 @@ where
 
 #[cfg(test)]
 mod tests {
-	use std::convert::Infallible;
-
 	use hyper::{service::service_fn, Body, Request, Response};
 	use tower::Service;
 
 	use super::MakeMultiplexer;
 
+	async fn service(_req: Request<Body>) -> Result<Response<Body>, String> {
+		Ok(Response::new(Body::from("service")))
+	}
+
 	#[test]
 	fn make_multiplexer_receives_two_make_service_impl_make_service() {
-		let make_grpc = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, Infallible>(Response::new(Body::from("service")))
-		}));
-		let make_web = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, Infallible>(Response::new(Body::from("service")))
-		}));
+		let make_grpc = tower::make::Shared::new(service_fn(service));
+		let make_web = tower::make::Shared::new(service_fn(service));
 
 		//Only ensure that constructor accepts these services
 		let _make_multiplexer = MakeMultiplexer::new(make_grpc, make_web);
 	}
+
 	#[tokio::test]
 	async fn make_multiplexer_is_a_make_service() {
-		let make_grpc = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, String>(Response::new(Body::from("service")))
-		}));
-		let make_web = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, String>(Response::new(Body::from("service")))
-		}));
+		let make_grpc = tower::make::Shared::new(service_fn(service));
+		let make_web = tower::make::Shared::new(service_fn(service));
 
 		let mut make_multiplexer = MakeMultiplexer::new(make_grpc, make_web);
 		use tower::make::MakeService;
 		//Ensure make_multiplexer is a MakeService
 		let _service = make_multiplexer.make_service(()).await.unwrap();
 	}
+
 	#[tokio::test]
 	async fn use_make_multiplexer_as_service() {
-		let make_grpc = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, String>(Response::new(Body::from("service")))
-		}));
-		let make_web = tower::make::Shared::new(service_fn(|_req: Request<Body>| async {
-			Ok::<_, String>(Response::new(Body::from("service")))
-		}));
+		let make_grpc = tower::make::Shared::new(service_fn(service));
+		let make_web = tower::make::Shared::new(service_fn(service));
 		let mut make_multiplexer = MakeMultiplexer::new(make_grpc, make_web);
 		use tower::ServiceExt;
 

@@ -180,3 +180,35 @@ async fn make_multiplexer_delayed_both() {
 	println!("delayed took: {:?}", after - before);
 	assert!(after >= until, "should wait for more {:?}", (until - after));
 }
+
+#[tokio::test]
+async fn make_multiplexer_failing_grpc() {
+	let make_grpc = svc::FailingFutureMakeService {};
+	let make_web = svc::ReadyMakeService {};
+	let mut make_service = MakeMultiplexer::new(make_grpc, make_web);
+
+	ServiceExt::<()>::ready(&mut make_service).await.unwrap();
+	let res = make_service.call(()).await;
+	assert!(res.is_err());
+}
+
+#[tokio::test]
+async fn make_multiplexer_failing_web() {
+	let make_grpc = svc::ReadyMakeService {};
+	let make_web = svc::FailingFutureMakeService {};
+	let mut make_service = MakeMultiplexer::new(make_grpc, make_web);
+
+	ServiceExt::<()>::ready(&mut make_service).await.unwrap();
+	let res = make_service.call(()).await;
+	assert!(res.is_err());
+}
+#[tokio::test]
+async fn make_multiplexer_failing_both() {
+	let make_grpc = svc::FailingFutureMakeService {};
+	let make_web = svc::FailingFutureMakeService {};
+	let mut make_service = MakeMultiplexer::new(make_grpc, make_web);
+
+	ServiceExt::<()>::ready(&mut make_service).await.unwrap();
+	let res = make_service.call(()).await;
+	assert!(res.is_err());
+}

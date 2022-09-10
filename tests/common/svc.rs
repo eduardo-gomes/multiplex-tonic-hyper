@@ -139,6 +139,28 @@ impl<T> Service<T> for ReadyMakeService {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct FailingFutureMakeService {}
+impl FailingFutureMakeService {
+	pub fn get_err_string() -> String {
+		"This service future fails!".into()
+	}
+}
+
+impl<T> Service<T> for FailingFutureMakeService {
+	type Response = ReadyService;
+	type Error = String;
+	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+	fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, _req: T) -> Self::Future {
+		Box::pin(ready(Err(Self::get_err_string())))
+	}
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct DelayedMakeService {
 	ready_after: Instant,
 }
