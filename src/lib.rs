@@ -11,6 +11,9 @@ use hyper::{body::HttpBody, Body, Request, Response};
 use pin_project::pin_project;
 use tower::Service;
 
+pub use make::MakeMultiplexer;
+mod make;
+
 /// Service that routes to a gRPC service and other service
 ///
 /// This service checks the Content-Type header, and send all requests
